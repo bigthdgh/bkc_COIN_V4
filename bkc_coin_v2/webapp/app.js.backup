@@ -1,0 +1,1705 @@
+/* global React, ReactDOM */
+
+const { useEffect, useMemo, useRef, useState } = React;
+
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.ready();
+  tg.expand();
+  try {
+    tg.setHeaderColor("#0a3a4e");
+    tg.setBackgroundColor("#12253f");
+  } catch {}
+}
+
+const format = (value) => Number(value || 0).toLocaleString("ru-RU");
+const qp = new URLSearchParams(window.location.search);
+const apiParam = qp.get("api");
+const nodesParam = qp.get("nodes");
+const nodesTapParam = qp.get("nodes_tap");
+const nodesMarketParam = qp.get("nodes_market");
+const nodesBankParam = qp.get("nodes_bank");
+const nodesAdminParam = qp.get("nodes_admin");
+const nodesFullParam = qp.get("nodes_full");
+const fallbackApi =
+  window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost"
+    ? "http://127.0.0.1:8080"
+    : window.location.origin;
+
+function clampInt(v, min, max, def = min) {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return def;
+  return Math.max(min, Math.min(max, Math.floor(x)));
+}
+
+function normalizeBase(url) {
+  return String(url || "").trim().replace(/\/$/, "");
+}
+
+function parseNodes(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  return s
+    .split(",")
+    .map((x) => normalizeBase(x))
+    .filter(Boolean);
+}
+
+const fromWindow = Array.isArray(window.BKC_API_NODES) ? window.BKC_API_NODES : [];
+const configuredPool = Array.from(
+  new Set([
+    ...parseNodes(nodesParam),
+    ...fromWindow.map((x) => normalizeBase(x)).filter(Boolean),
+  ])
+);
+const nodesTapWindow = Array.isArray(window.BKC_API_NODES_TAP) ? window.BKC_API_NODES_TAP : [];
+const nodesMarketWindow = Array.isArray(window.BKC_API_NODES_MARKET) ? window.BKC_API_NODES_MARKET : [];
+const nodesBankWindow = Array.isArray(window.BKC_API_NODES_BANK) ? window.BKC_API_NODES_BANK : [];
+const nodesAdminWindow = Array.isArray(window.BKC_API_NODES_ADMIN) ? window.BKC_API_NODES_ADMIN : [];
+const nodesFullWindow = Array.isArray(window.BKC_API_NODES_FULL) ? window.BKC_API_NODES_FULL : [];
+
+function uniqNodes(...parts) {
+  return Array.from(
+    new Set(
+      parts
+        .flat()
+        .map((x) => normalizeBase(x))
+        .filter(Boolean)
+    )
+  );
+}
+
+const defaultPool = apiParam
+  ? [normalizeBase(apiParam)]
+  : configuredPool.length > 0
+  ? configuredPool
+  : [normalizeBase(fallbackApi)];
+
+const POOLS = {
+  full: uniqNodes(parseNodes(nodesFullParam), nodesFullWindow, defaultPool),
+  tap: uniqNodes(parseNodes(nodesTapParam), nodesTapWindow, defaultPool),
+  market: uniqNodes(parseNodes(nodesMarketParam), nodesMarketWindow, defaultPool),
+  bank: uniqNodes(parseNodes(nodesBankParam), nodesBankWindow, defaultPool),
+  admin: uniqNodes(parseNodes(nodesAdminParam), nodesAdminWindow, defaultPool),
+};
+
+function endpointProfile(path) {
+  const p = String(path || "").toLowerCase().trim();
+  if (!p) return "full";
+  if (
+    p === "tap" ||
+    p === "state" ||
+    p === "buy" ||
+    p === "blockchain" ||
+    p === "health"
+  ) {
+    return "tap";
+  }
+  if (p.startsWith("market/") || p.startsWith("nfts/") || p.startsWith("assets/listings/")) {
+    return "market";
+  }
+  if (
+    p === "transfer" ||
+    p.startsWith("bank/") ||
+    p.startsWith("p2p/") ||
+    p.startsWith("deposit/") ||
+    p.startsWith("cryptopay/")
+  ) {
+    return "bank";
+  }
+  if (p.startsWith("admin/")) {
+    return "admin";
+  }
+  return "full";
+}
+
+function pickApiBase(profile) {
+  const mode = profile || "full";
+  const pool = POOLS[mode] && POOLS[mode].length ? POOLS[mode] : defaultPool;
+  const key = `bkc_api_base_${mode}`;
+  const stored = normalizeBase(sessionStorage.getItem(key));
+  if (stored && pool.includes(stored)) {
+    return stored;
+  }
+  const uid = Number(tg?.initDataUnsafe?.user?.id || 0);
+  let idx = 0;
+  if (Number.isFinite(uid) && uid > 0) {
+    idx = Math.abs(uid) % pool.length;
+  } else {
+    idx = Math.floor(Math.random() * pool.length);
+  }
+  const chosen = pool[idx];
+  sessionStorage.setItem(key, chosen);
+  return chosen;
+}
+
+function getApiBaseForPath(path) {
+  const profile = endpointProfile(path);
+  return pickApiBase(profile);
+}
+
+function rotateNode(path, currentBase) {
+  const profile = endpointProfile(path);
+  const mode = profile || "full";
+  const pool = POOLS[mode] && POOLS[mode].length ? POOLS[mode] : defaultPool;
+  if (pool.length <= 1) return currentBase;
+  const idx = pool.indexOf(currentBase);
+  const next = pool[(idx + 1 + pool.length) % pool.length];
+  sessionStorage.setItem(`bkc_api_base_${mode}`, next);
+  return next;
+}
+
+let LAST_API_BASE = "";
+const DEFAULT_COIN_IMG = `${getApiBaseForPath("state")}/assets/coin.svg`;
+
+const MAX_MULTITOUCH = 13;
+const TAP_BATCH_WINDOW_MS = 90;
+const TAP_SYNC_INTERVAL_MS = clampInt(qp.get("tap_sync_ms"), 200, 10_000, 650);
+const MAX_TAP_BATCH = 500;
+
+async function requestJSON(method, path, payload = undefined) {
+  const profile = endpointProfile(path);
+  const pool = POOLS[profile] && POOLS[profile].length ? POOLS[profile] : defaultPool;
+  let attempt = 0;
+  const maxAttempts = Math.min(3, pool.length);
+  let lastErr = null;
+  let base = getApiBaseForPath(path);
+
+  while (attempt < maxAttempts) {
+    try {
+      LAST_API_BASE = base;
+      const response = await fetch(`${base}/api/v1/${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: payload === undefined ? undefined : JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "Ошибка API");
+      }
+      return data.data;
+    } catch (e) {
+      lastErr = e;
+      attempt += 1;
+      if (attempt < maxAttempts) {
+        base = rotateNode(path, base);
+      }
+    }
+  }
+
+  throw lastErr || new Error("Ошибка сети");
+}
+
+async function post(path, payload = {}) {
+  return requestJSON("POST", path, {
+    init_data: tg?.initData || "",
+    ...payload,
+  });
+}
+
+async function get(path) {
+  return requestJSON("GET", path);
+}
+
+function App() {
+  const initialTab = (new URLSearchParams(window.location.search).get("tab") || "tap").toLowerCase();
+  const [tab, setTab] = useState(["tap", "wallet", "market", "deposit", "chain"].includes(initialTab) ? initialTab : "tap");
+  const [loading, setLoading] = useState(true);
+  const [state, setState] = useState(null);
+  const [chain, setChain] = useState(null);
+  const [message, setMessage] = useState(null);
+  const [floating, setFloating] = useState([]);
+
+  // Wallet transfer
+  const [toAddress, setToAddress] = useState("");
+  const [transferAmount, setTransferAmount] = useState("");
+
+  // CryptoPay (CryptoBot)
+  const [invoiceUsd, setInvoiceUsd] = useState("1");
+  const [invoice, setInvoice] = useState(null); // { invoice_id, url, status, amount_usd, coins }
+
+  // Manual deposit
+  const [depositTx, setDepositTx] = useState("");
+  const [depositUsd, setDepositUsd] = useState("");
+  const [depositCurrency, setDepositCurrency] = useState("USDT");
+
+  // Deposits admin
+  const [adminDeposits, setAdminDeposits] = useState([]);
+  const [walletEditorOpen, setWalletEditorOpen] = useState(false);
+  const [walletDraft, setWalletDraft] = useState([]); // [{k, v}]
+  const [broadcastText, setBroadcastText] = useState("");
+
+  // NFTs
+  const [nfts, setNfts] = useState([]);
+  const [myNfts, setMyNfts] = useState([]);
+
+  // Admin NFT create
+  const [nftTitle, setNftTitle] = useState("");
+  const [nftImageURL, setNftImageURL] = useState("");
+  const [nftPrice, setNftPrice] = useState("50000");
+  const [nftSupply, setNftSupply] = useState("100");
+
+  // Admin reserve send
+  const [adminToUser, setAdminToUser] = useState("");
+  const [adminGiveAmount, setAdminGiveAmount] = useState("10000");
+
+  // Bank loans
+  const [loanAmount, setLoanAmount] = useState("");
+  const [bankLoans, setBankLoans] = useState([]);
+
+  // Freeze funds (stake-like)
+  const [freezeAmount, setFreezeAmount] = useState("");
+
+  // P2P loans
+  const [p2pLender, setP2pLender] = useState("");
+  const [p2pAmount, setP2pAmount] = useState("");
+  const [p2pInterestPct, setP2pInterestPct] = useState("15"); // % for the whole term
+  const [p2pTermDays, setP2pTermDays] = useState("7");
+  const [p2pIncoming, setP2pIncoming] = useState([]);
+  const [p2pMy, setP2pMy] = useState([]);
+
+  // Bazaar / market listings
+  const [listings, setListings] = useState([]);
+  const [myListings, setMyListings] = useState([]);
+  const [listingTitle, setListingTitle] = useState("");
+  const [listingDesc, setListingDesc] = useState("");
+  const [listingCategory, setListingCategory] = useState("other");
+  const [listingPrice, setListingPrice] = useState("");
+  const [listingContact, setListingContact] = useState("");
+  const [listingImageFile, setListingImageFile] = useState(null);
+
+  // Tap buffering
+  const tapBufferRef = useRef(0);
+  const tapFlushTimerRef = useRef(null);
+  const tapRequestInFlightRef = useRef(false);
+  const tapSyncTimerRef = useRef(null);
+
+  // Language state
+  const [language, setLanguage] = useState(() => {
+    const saved = localStorage.getItem('bkc_language');
+    return saved || 'ru';
+  });
+
+  const texts = {
+    ru: {
+      loading: 'Загрузка...',
+      connecting: 'Подключаюсь к backend API',
+      telegramOnly: 'Mini App работает только в Telegram',
+      openInBot: 'Откройте MINI APP в боте',
+      tapEngine: 'Tap Engine',
+      energy: 'Energy',
+      taps: 'Taps',
+      bkcPerDollar: 'BKC / $1',
+      refresh: 'Обновить',
+      sync: 'Синхронизировать',
+      wallet: 'Кошелек',
+      market: 'Маркет',
+      deposit: 'Пополнить',
+      chain: 'Chain',
+      level: 'Level',
+      bkc: 'BKC',
+      available: 'Доступно',
+      frozen: 'Заморожено',
+      nftBought: 'NFT куплен',
+      transferComplete: 'Перевод выполнен',
+      energyActivated: 'Energy 1h активирована. Списано {cost} BKC.',
+      limitIncreased: 'Лимит на сегодня увеличен на +{size}. Списано {cost} BKC.',
+      fundsFrozen: 'Заморожено {amount} BKC',
+      fundsUnfrozen: 'Разморожено {amount} BKC',
+      dailyLimitExceeded: 'Дневной лимит тапов исчерпан. Можно купить доп. лимит в Market.',
+      reserveEmpty: 'Резерв пуст. Сейчас нельзя майнить через тап.',
+      close: 'Закрыть',
+      daily: 'Сегодня: {current} / {max} • Остаток: {remaining}',
+      multiTouch: 'Поддержка до {max} пальцев. Тапы тратят энергию.',
+      levelText: 'Level',
+      availableFrozen: 'Доступно: {available} BKC • Заморожено: {frozen} BKC',
+      creditTaken: 'Кредит оформлен: +{amount} BKC',
+      loanRepaid: 'Кредит погашен',
+      loanRequested: 'Заявка отправлена #{id}',
+      loanIssued: 'Долг выдан',
+      loanRejected: 'Заявка отклонена',
+      loanRepaidP2P: 'Долг погашен',
+      loanRecalled: 'Долг возвращен (если у заемщика хватило средств)',
+      listingCreated: 'Объявление создано. Комиссия: {fee} BKC сожжено.',
+      listingDeleted: 'Объявление удалено',
+      listingCancelled: 'Объявление снято',
+      purchaseCompleted: 'Покупка выполнена',
+      requestCreated: 'Заявка #{id} создана. Жди подтверждение админа.',
+      depositApproved: 'Пополнение подтверждено',
+      depositRejected: 'Пополнение отклонено',
+      walletsUpdated: 'Кошельки обновлены',
+      broadcastSent: 'Рассылка запущена. Статус придет в Telegram.',
+      invoiceCreated: 'Инвойс создан: ${usd}$ => +{coins} BKC',
+      statusUpdated: 'Статус: {status}. Начислено: {credited} BKC',
+      walletSaved: 'Кошельки сохранены',
+      depositCreated: 'Заявка #{deposit_id} создана. Ожидайте подтверждения.',
+      // Navigation labels
+      tapTab: 'Тап',
+      walletTab: 'Кошелек',
+      marketTab: 'Маркет',
+      depositTab: 'Пополнить',
+      chainTab: 'Цепочка',
+      // Panel titles
+      tapEngine: 'Тап движок',
+      blockchain: 'Блокчейн',
+      // Labels
+      users: 'Пользователи',
+      transactions: 'Транзакции',
+      tapped: 'Накликано',
+      reserve: 'Резерв',
+      energy1h: 'Energy 1ч',
+      nftShop: 'Магазин NFT',
+      admin: 'Админ',
+      invoice: 'Инвойс',
+      usdt: 'USDT',
+      trx: 'TRX',
+      sol: 'SOL',
+      depositToWallet: 'Пополнение по кошельку',
+      // ... добавлю остальные по мере необходимости
+    },
+    en: {
+      loading: 'Loading...',
+      connecting: 'Connecting to backend API',
+      telegramOnly: 'Mini App works only in Telegram',
+      openInBot: 'Open MINI APP in bot',
+      tapEngine: 'Tap Engine',
+      energy: 'Energy',
+      taps: 'Taps',
+      bkcPerDollar: 'BKC / $1',
+      refresh: 'Refresh',
+      sync: 'Sync',
+      wallet: 'Wallet',
+      market: 'Market',
+      deposit: 'Deposit',
+      chain: 'Chain',
+      level: 'Level',
+      bkc: 'BKC',
+      available: 'Available',
+      frozen: 'Frozen',
+      nftBought: 'NFT purchased',
+      transferComplete: 'Transfer completed',
+      energyActivated: `Energy 1h activated. Charged ${format(0)} BKC.`,
+      limitIncreased: `Daily limit increased by +${format(0)}. Charged ${format(0)} BKC.`,
+      fundsFrozen: `Frozen ${format(0)} BKC`,
+      fundsUnfrozen: `Unfrozen ${format(0)} BKC`,
+      dailyLimitExceeded: 'Daily tap limit exceeded. You can buy extra limit in Market.',
+      reserveEmpty: 'Reserve is empty. Cannot mine through taps now.',
+      creditTaken: 'Credit issued: +{amount} BKC',
+      loanRepaid: 'Loan repaid',
+      loanRequested: 'Application sent #{id}',
+      loanIssued: 'Debt issued',
+      loanRejected: 'Application rejected',
+      loanRepaidP2P: 'Debt repaid',
+      loanRecalled: 'Debt returned (if borrower had enough funds)',
+      listingCreated: 'Listing created. Fee: {fee} BKC burned.',
+      listingDeleted: 'Listing deleted',
+      listingCancelled: 'Listing cancelled',
+      purchaseCompleted: 'Purchase completed',
+      requestCreated: 'Application #{id} created. Waiting for admin confirmation.',
+      depositApproved: 'Deposit approved',
+      depositRejected: 'Deposit rejected',
+      walletsUpdated: 'Wallets updated',
+      broadcastSent: 'Broadcast launched. Status will come to Telegram.',
+      invoiceCreated: 'Invoice created: ${usd}$ => +{coins} BKC',
+      statusUpdated: 'Status: {status}. Credited: {credited} BKC',
+      walletSaved: 'Wallets saved',
+      depositCreated: 'Application #{deposit_id} created. Waiting for confirmation.',
+      // Navigation labels
+      tapTab: 'Tap',
+      walletTab: 'Wallet',
+      marketTab: 'Market',
+      depositTab: 'Deposit',
+      chainTab: 'Chain',
+      // Panel titles
+      tapEngine: 'Tap Engine',
+      blockchain: 'Blockchain',
+      // Labels
+      users: 'Users',
+      transactions: 'Txs',
+      tapped: 'Tapped',
+      reserve: 'Reserve',
+      energy1h: 'Energy 1h',
+      nftShop: 'NFT Shop',
+      admin: 'Admin',
+      invoice: 'Invoice',
+      usdt: 'USDT',
+      trx: 'TRX',
+      sol: 'SOL',
+      depositToWallet: 'Deposit to wallet',
+    }
+  };
+
+  const t = (key) => texts[language][key] || key;
+
+  const toggleLanguage = () => {
+    const newLang = language === 'ru' ? 'en' : 'ru';
+    setLanguage(newLang);
+    localStorage.setItem('bkc_language', newLang);
+  };
+  const user = tg?.initDataUnsafe?.user || {};
+  const name = state?.first_name || user.first_name || "Player";
+  const tapsTotal = Number(state?.taps_total || 0);
+  const rate = Number(state?.coins_per_usd || 0);
+  const energy = Number(state?.energy || 0);
+  const energyMax = Number(state?.energy_max || 0);
+  const frozenBalance = Number(state?.frozen_balance || 0);
+  const tapCfg = state?.tap || {};
+  const dailyLimit = Number(tapCfg.daily_limit || 0);
+  const dailyTapped = Number(tapCfg.daily_tapped || 0);
+  const dailyExtraQuota = Number(tapCfg.daily_extra_quota || 0);
+  const dailyRemaining = Number(tapCfg.daily_remaining || 0);
+  const tapPackSize = Number(tapCfg.pack_size || 0);
+  const tapPackPrice = Number(state?.prices?.TAP_PACK || 0);
+  const bankCfg = state?.bank || {};
+  const loanMax = Number(bankCfg.loan_max_amount || 0);
+  const loan7BP = Number(bankCfg.loan_7d_interest_bp || 0);
+  const loan30BP = Number(bankCfg.loan_30d_interest_bp || 0);
+  const p2pRecallMinDays = Number(bankCfg.p2p_recall_min_days || 5);
+  const listingFee = Number(bankCfg.market_listing_fee_bkc || 2000);
+
+  const level = useMemo(() => Math.floor(tapsTotal / 100) + 1, [tapsTotal]);
+  const energyPct = useMemo(() => {
+    if (!energyMax) return 0;
+    return Math.max(0, Math.min(100, Math.round((energy / energyMax) * 100)));
+  }, [energy, energyMax]);
+
+  async function loadState() {
+    try {
+      setLoading(true);
+      const data = await post("state");
+      setState(data);
+      setMessage(null);
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadChain() {
+    try {
+      const data = await get("blockchain");
+      setChain(data);
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function loadNfts() {
+    try {
+      const data = await post("nfts/list");
+      setNfts(data.items || []);
+    } catch {}
+  }
+
+  async function loadMyNfts() {
+    try {
+      const data = await post("nfts/my");
+      setMyNfts(data.items || []);
+    } catch {}
+  }
+
+  async function buyNft(nftId) {
+    try {
+      const data = await post("nfts/buy", { nft_id: Number(nftId) });
+      setState(data);
+      setMessage({ type: "good", text: t('nftBought') });
+      loadNfts();
+      loadMyNfts();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function transfer() {
+    try {
+      const amount = clampInt(transferAmount, 1, 10_000_000, 1);
+      const data = await post("transfer", { to_address: toAddress.trim(), amount });
+      setState(data);
+      setToAddress("");
+      setTransferAmount("");
+      setMessage({ type: "good", text: t('transferComplete') });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function buyEnergy1h() {
+    try {
+      const data = await post("buy", { item: "energy_1h" });
+      setState(data);
+      setMessage({ type: "good", text: t('energyActivated').replace('{cost}', format(data.cost || 0)) });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function buyTapPack() {
+    try {
+      const data = await post("buy", { item: "tap_pack" });
+      setState(data);
+      setMessage({ type: "good", text: t('limitIncreased').replace('{size}', format(data.pack_size || 0)).replace('{cost}', format(data.cost || 0)) });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function freezeFunds() {
+    try {
+      const amount = clampInt(freezeAmount, 1, 500_000_000, 1);
+      const data = await post("bank/freeze", { amount });
+      setState(data);
+      setFreezeAmount("");
+      setMessage({ type: "good", text: t('fundsFrozen').replace('{amount}', format(amount)) });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function unfreezeFunds() {
+    try {
+      const amount = clampInt(freezeAmount, 1, 500_000_000, 1);
+      const data = await post("bank/unfreeze", { amount });
+      setState(data);
+      setFreezeAmount("");
+      setMessage({ type: "good", text: t('fundsUnfrozen').replace('{amount}', format(amount)) });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  function openWalletEditor() {
+    const entries = Object.entries(state?.deposit_wallets || {});
+    const rows = entries.length
+      ? entries.map(([k, v]) => ({ k, v }))
+      : [
+          { k: "USDT_TRC20", v: "" },
+          { k: "TRX", v: "" },
+          { k: "SOL", v: "" },
+        ];
+    setWalletDraft(rows);
+    setWalletEditorOpen(true);
+  }
+
+  function updateWalletRow(idx, field, value) {
+    setWalletDraft((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
+  }
+
+  function addWalletRow() {
+    setWalletDraft((prev) => [...prev, { k: "", v: "" }]);
+  }
+
+  function removeWalletRow(idx) {
+    setWalletDraft((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function saveWallets() {
+    try {
+      const wallets = {};
+      for (const row of walletDraft || []) {
+        const k = String(row.k || "").trim().toUpperCase();
+        const v = String(row.v || "").trim();
+        if (!k || !v) continue;
+        wallets[k] = v;
+      }
+      const data = await post("admin/deposit_wallets/set", { wallets });
+      setState(data);
+      setWalletEditorOpen(false);
+      setMessage({ type: "good", text: t('walletSaved') });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function adminBroadcast() {
+    try {
+      const text = String(broadcastText || "").trim();
+      if (!text) throw new Error("Р’РІРµРґРёС‚Рµ С‚РµРєСЃС‚ СЂР°СЃСЃС‹Р»РєРё");
+      await post("admin/broadcast", { text });
+      setBroadcastText("");
+      setMessage({ type: "info", text: t('broadcastSent') });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function createCryptoPayInvoice() {
+    try {
+      const usd = clampInt(invoiceUsd, 1, 10_000, 1);
+      const data = await post("deposit/cryptopay/invoice", { amount_usd: usd });
+      setInvoice(data);
+      setMessage({ type: "good", text: t('invoiceCreated').replace('{amount_usd}', data.amount_usd).replace('{format(data.coins)}', format(data.coins)) });
+      const url = data.url;
+      if (url) {
+        try { tg?.openLink?.(url); } catch {}
+        try { tg?.openTelegramLink?.(url); } catch {}
+        try { window.open(url, "_blank"); } catch {}
+      }
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function checkCryptoPayInvoice() {
+    try {
+      if (!invoice?.invoice_id) throw new Error("РќРµС‚ invoice_id");
+      const data = await post("deposit/cryptopay/check", { invoice_id: Number(invoice.invoice_id) });
+      setState(data);
+      const info = data.cryptopay || {};
+      setInvoice((prev) => (prev ? { ...prev, status: info.status || prev.status } : prev));
+      setMessage({ type: "good", text: `РЎС‚Р°С‚СѓСЃ: ${info.status || "?"}. РќР°С‡РёСЃР»РµРЅРѕ: ${format(info.credited || 0)} BKC` });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function createDeposit() {
+    try {
+      const usd = clampInt(depositUsd, 1, 1_000_000, 1);
+      const tx = depositTx.trim();
+      if (tx.length < 6) throw new Error("РЈРєР°Р¶Рё TX hash");
+      const data = await post("deposit/create", { tx_hash: tx, amount_usd: usd, currency: depositCurrency });
+      setState(data);
+      setDepositTx("");
+      setDepositUsd("");
+      const dep = data.deposit || {};
+      setMessage({ type: "info", text: t('depositCreated').replace('{deposit_id}', dep.deposit_id || "?") });
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function adminLoadDeposits() {
+    try {
+      const data = await post("deposit/list", { status: "pending", limit: 50 });
+      setAdminDeposits(data.items || []);
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function adminProcessDeposit(depositId, approve) {
+    try {
+      await post("deposit/process", { deposit_id: Number(depositId), approve: !!approve });
+      setMessage({ type: "good", text: approve ? t('depositApproved') : t('depositRejected') });
+      adminLoadDeposits();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function adminCreateNft() {
+    try {
+      const payload = {
+        title: nftTitle.trim(),
+        image_url: nftImageURL.trim(),
+        price_coins: clampInt(nftPrice, 1, 500_000_000, 1),
+        supply_total: clampInt(nftSupply, 1, 1_000_000, 1),
+      };
+      if (!payload.title) throw new Error("РќР°Р·РІР°РЅРёРµ NFT");
+      if (!payload.image_url) throw new Error("РЎСЃС‹Р»РєР° РЅР° РєР°СЂС‚РёРЅРєСѓ NFT");
+      const data = await post("admin/nfts/create", payload);
+      setMessage({ type: "good", text: `NFT РґРѕР±Р°РІР»РµРЅ (#${data.nft_id})` });
+      setNftTitle("");
+      setNftImageURL("");
+      loadNfts();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function adminReserveSend() {
+    try {
+      const payload = {
+        to_user_id: clampInt(adminToUser, 1, 99_999_999_999, 1),
+        amount: clampInt(adminGiveAmount, 1, 500_000_000, 1),
+      };
+      await post("admin/reserve/send", payload);
+      setMessage({ type: "good", text: "РћС‚РїСЂР°РІР»РµРЅРѕ РёР· СЂРµР·РµСЂРІР°" });
+      loadState();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function loadBankLoans() {
+    try {
+      const data = await post("bank/loan/my", { limit: 50 });
+      setBankLoans(data.items || []);
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  function calcLoanTotal(principal, interestBP) {
+    const p = Number(principal || 0);
+    const bp = Number(interestBP || 0);
+    return p + Math.floor((p * bp) / 10000);
+  }
+
+  async function takeLoan(plan) {
+    try {
+      const amount = clampInt(loanAmount, 1, loanMax || 500_000_000, 1);
+      const data = await post("bank/loan/take", { plan, amount });
+      setState(data);
+      setLoanAmount("");
+      setMessage({ type: "good", text: t('fundsUnfrozen').replace(format(0), format(amount)) });
+      loadBankLoans();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function repayLoan(loanId) {
+    try {
+      const data = await post("bank/loan/repay", { loan_id: Number(loanId) });
+      setState(data);
+      setMessage({ type: "good", text: "РљСЂРµРґРёС‚ РїРѕРіР°С€РµРЅ" });
+      loadBankLoans();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function loadP2P() {
+    try {
+      const [incoming, mine] = await Promise.all([
+        post("p2p/loan/incoming", { limit: 50 }).catch(() => ({ items: [] })),
+        post("p2p/loan/my", { limit: 50 }).catch(() => ({ items: [] })),
+      ]);
+      setP2pIncoming(incoming.items || []);
+      setP2pMy(mine.items || []);
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function requestP2P() {
+    try {
+      const lender = p2pLender.trim();
+      if (!lender) throw new Error("РЈРєР°Р¶Рё РєСЂРµРґРёС‚РѕСЂР° (ID РёР»Рё BKC123)");
+      const amount = clampInt(p2pAmount, 1, 500_000_000, 1);
+      const pct = clampInt(p2pInterestPct, 0, 500, 0);
+      const interest_bp = Math.min(50_000, pct * 100);
+      const term_days = clampInt(p2pTermDays, 1, 365, 7);
+      const data = await post("p2p/loan/request", { lender, amount, interest_bp, term_days });
+      setMessage({ type: "good", text: `Р—Р°СЏРІРєР° РѕС‚РїСЂР°РІР»РµРЅР° (#${data.loan?.loan_id || "?"})` });
+      setP2pAmount("");
+      loadP2P();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function acceptP2P(loanId) {
+    try {
+      await post("p2p/loan/accept", { loan_id: Number(loanId) });
+      setMessage({ type: "good", text: "Р”РѕР»Рі РІС‹РґР°РЅ" });
+      await loadState();
+      loadP2P();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function rejectP2P(loanId) {
+    try {
+      await post("p2p/loan/reject", { loan_id: Number(loanId) });
+      setMessage({ type: "info", text: "Р—Р°СЏРІРєР° РѕС‚РєР»РѕРЅРµРЅР°" });
+      loadP2P();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function repayP2P(loanId) {
+    try {
+      const data = await post("p2p/loan/repay", { loan_id: Number(loanId) });
+      setState(data);
+      setMessage({ type: "good", text: "Р”РѕР»Рі РїРѕРіР°С€РµРЅ" });
+      loadP2P();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function recallP2P(loanId) {
+    try {
+      await post("p2p/loan/recall", { loan_id: Number(loanId) });
+      setMessage({ type: "good", text: "Р”РѕР»Рі РІРѕР·РІСЂР°С‰РµРЅ (РµСЃР»Рё Сѓ Р·Р°РµРјС‰РёРєР° С…РІР°С‚Р°Р»Рѕ СЃСЂРµРґСЃС‚РІ)" });
+      await loadState();
+      loadP2P();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function loadListings() {
+    try {
+      const data = await post("market/listings/list", { status: "active", limit: 50 });
+      setListings(data.items || []);
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function loadMyListings() {
+    try {
+      const data = await post("market/listings/my", { limit: 50 });
+      setMyListings(data.items || []);
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  function fileToDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result || ""));
+      r.onerror = () => reject(new Error("РћС€РёР±РєР° С‡С‚РµРЅРёСЏ С„Р°Р№Р»Р°"));
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function createListing() {
+    try {
+      const title = listingTitle.trim();
+      const description = listingDesc.trim();
+      const category = (listingCategory || "other").trim();
+      const contact = listingContact.trim();
+      const price_coins = clampInt(listingPrice, 1, 500_000_000, 1);
+      if (!title) throw new Error("РќР°Р·РІР°РЅРёРµ");
+      if (!description) throw new Error("РћРїРёСЃР°РЅРёРµ");
+      if (!contact) throw new Error("РљРѕРЅС‚Р°РєС‚ (username РёР»Рё РЅРѕРјРµСЂ)");
+
+      let image_base64 = "";
+      let image_mime = "";
+      if (listingImageFile) {
+        if (listingImageFile.size > 780_000) throw new Error("Р¤РѕС‚Рѕ СЃР»РёС€РєРѕРј Р±РѕР»СЊС€РѕРµ (РјР°РєСЃ ~780KB). РЈРјРµРЅСЊС€Рё/СЃРѕР¶РјРё Рё РїРѕРїСЂРѕР±СѓР№ СЃРЅРѕРІР°.");
+        const url = await fileToDataURL(listingImageFile);
+        image_base64 = url;
+        image_mime = listingImageFile.type || "";
+      }
+
+      const data = await post("market/listings/create", {
+        title,
+        description,
+        category,
+        price_coins,
+        contact,
+        image_base64,
+        image_mime,
+      });
+      setState(data);
+      setMessage({ type: "good", text: `РћР±СЉСЏРІР»РµРЅРёРµ СЃРѕР·РґР°РЅРѕ. РљРѕРјРёСЃСЃРёСЏ: ${format(listingFee)} BKC СЃРѕР¶Р¶РµРЅРѕ.` });
+      setListingTitle("");
+      setListingDesc("");
+      setListingPrice("");
+      setListingContact("");
+      setListingCategory("other");
+      setListingImageFile(null);
+      loadListings();
+      loadMyListings();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function buyListing(listing) {
+    try {
+      const listingId = Number(listing?.listing_id || listing);
+      const cat = String(listing?.category || "").toLowerCase();
+      const contact = String(listing?.contact || "");
+      const data = await post("market/listings/buy", { listing_id: listingId });
+      setState(data);
+      if (cat === "fiat" || cat === "exchange") {
+        setMessage({ type: "info", text: `Заявка создана. Оплата вне бота. Контакт: ${contact || "-"}` });
+      } else {
+        setMessage({ type: "good", text: "Покупка выполнена" });
+      }
+      loadListings();
+      loadMyListings();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function adminDeleteListing(listingId) {
+    try {
+      await post("admin/market/listings/delete", { listing_id: Number(listingId) });
+      setMessage({ type: "info", text: "Объявление удалено" });
+      loadListings();
+      loadMyListings();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  async function cancelListing(listingId) {
+    try {
+      await post("market/listings/cancel", { listing_id: Number(listingId) });
+      setMessage({ type: "info", text: "РћР±СЉСЏРІР»РµРЅРёРµ СЃРЅСЏС‚Рѕ" });
+      loadListings();
+      loadMyListings();
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+    }
+  }
+
+  function pushFloat(text, x, y) {
+    const id = Date.now() + Math.random();
+    setFloating((prev) => [...prev, { id, text, x, y }]);
+    setTimeout(() => setFloating((prev) => prev.filter((item) => item.id !== id)), 780);
+  }
+
+  function scheduleTapFlush(force = false) {
+    if (force) {
+      flushTapBuffer();
+      return;
+    }
+    if (tapFlushTimerRef.current) return;
+    tapFlushTimerRef.current = setTimeout(() => {
+      tapFlushTimerRef.current = null;
+      flushTapBuffer();
+    }, TAP_BATCH_WINDOW_MS);
+  }
+
+  function applyOptimisticTap(reqCount) {
+    setState((prev) => {
+      if (!prev) return prev;
+      const e = Number(prev.energy || 0);
+      const dailyLimit = Number(prev.tap?.daily_limit || 0);
+      const dailyRemaining = dailyLimit > 0 ? Number(prev.tap?.daily_remaining || 0) : Number.MAX_SAFE_INTEGER;
+      const gained = Math.max(0, Math.min(reqCount, e, dailyRemaining));
+      if (gained <= 0) return prev;
+      return {
+        ...prev,
+        balance: Number(prev.balance || 0) + gained,
+        taps_total: Number(prev.taps_total || 0) + gained,
+        tap: prev.tap ? { ...prev.tap, daily_remaining: Math.max(0, dailyRemaining - gained), daily_tapped: Number(prev.tap?.daily_tapped || 0) + gained } : prev.tap,
+        energy: Math.max(0, e - gained),
+      };
+    });
+  }
+
+  async function flushTapBuffer() {
+    if (tapRequestInFlightRef.current) return;
+    const amount = Math.min(tapBufferRef.current, MAX_TAP_BATCH);
+    if (amount <= 0) return;
+
+    tapBufferRef.current -= amount;
+    tapRequestInFlightRef.current = true;
+    try {
+      const data = await post("tap", { count: amount });
+      // Old backend path returns a full state object; fasttap mode returns a compact delta.
+      if (data?.user_id) {
+        setState(data);
+      } else {
+        const gained = Number(data?.gained || 0);
+        const srvEnergy = Number(data?.energy);
+        const srvEnergyMax = Number(data?.energy_max);
+        const srvTap = data?.tap || {};
+        const diff = Math.max(0, amount - gained);
+        setState((prev) => {
+          if (!prev) return prev;
+          const prevTap = prev.tap || {};
+          const dailyLimit = Number(prevTap.daily_limit || 0);
+          const dailyExtra = Number(prevTap.daily_extra_quota || 0);
+          const dailyMax = dailyLimit > 0 ? dailyLimit + dailyExtra : Number.MAX_SAFE_INTEGER;
+          const next = {
+            ...prev,
+            balance: Number(prev.balance || 0) - diff,
+            taps_total: Math.max(0, Number(prev.taps_total || 0) - diff),
+            energy: Math.min(Number(prev.energy_max || 0) || 0, Number(prev.energy || 0) + diff),
+            tap: prevTap ? { ...prevTap } : prevTap,
+          };
+          if (next.tap) {
+            next.tap.daily_tapped = Math.max(0, Number(next.tap.daily_tapped || 0) - diff);
+            if (dailyLimit > 0) {
+              next.tap.daily_remaining = Math.min(dailyMax, Number(next.tap.daily_remaining || 0) + diff);
+            }
+          }
+          if (Number.isFinite(srvEnergy)) next.energy = Math.max(0, srvEnergy);
+          if (Number.isFinite(srvEnergyMax)) next.energy_max = Math.max(0, srvEnergyMax);
+          if (next.tap && srvTap) {
+            if (srvTap.daily_limit !== undefined) next.tap.daily_limit = Number(srvTap.daily_limit || 0);
+            if (srvTap.daily_tapped !== undefined) next.tap.daily_tapped = Number(srvTap.daily_tapped || 0);
+            if (srvTap.daily_extra_quota !== undefined) next.tap.daily_extra_quota = Number(srvTap.daily_extra_quota || 0);
+            if (srvTap.daily_remaining !== undefined) next.tap.daily_remaining = Number(srvTap.daily_remaining || 0);
+            if (srvTap.pack_size !== undefined) next.tap.pack_size = Number(srvTap.pack_size || 0);
+          }
+          return next;
+        });
+      }
+      if (data?.tap_reason === "daily_limit") {
+        setMessage({ type: "info", text: "Р”РЅРµРІРЅРѕР№ Р»РёРјРёС‚ С‚Р°РїРѕРІ РёСЃС‡РµСЂРїР°РЅ. РњРѕР¶РЅРѕ РєСѓРїРёС‚СЊ РґРѕРї. Р»РёРјРёС‚ РІ Market." });
+      } else if (data?.tap_reason === "reserve_empty") {
+        setMessage({ type: "info", text: "Р РµР·РµСЂРІ РїСѓСЃС‚. РЎРµР№С‡Р°СЃ РЅРµР»СЊР·СЏ РјР°Р№РЅРёС‚СЊ С‡РµСЂРµР· С‚Р°Рї." });
+      } else {
+        setMessage(null);
+      }
+    } catch (e) {
+      setMessage({ type: "bad", text: e.message });
+      await loadState();
+    } finally {
+      tapRequestInFlightRef.current = false;
+      if (tapBufferRef.current > 0) scheduleTapFlush(true);
+    }
+  }
+
+  function tap(count, clientX, clientY) {
+    const n = Math.max(1, Math.min(MAX_MULTITOUCH, Number(count) || 1));
+    const effDailyRemaining = dailyLimit > 0 ? dailyRemaining : Number.MAX_SAFE_INTEGER;
+    const allowed = Math.max(0, Math.min(n, energy, effDailyRemaining));
+    if (allowed <= 0) return;
+    applyOptimisticTap(allowed);
+    pushFloat(`+${allowed}`, clientX, clientY);
+    tapBufferRef.current += allowed;
+    scheduleTapFlush();
+    if (tg?.HapticFeedback?.impactOccurred) {
+      tg.HapticFeedback.impactOccurred(n >= 4 ? "medium" : "light");
+    }
+  }
+
+  function onCoinTouchStart(event) {
+    event.preventDefault();
+    const touches = Math.max(1, Math.min(MAX_MULTITOUCH, event.changedTouches?.length || 1));
+    const t = event.changedTouches?.[0];
+    tap(touches, t?.clientX || (window.innerWidth / 2), t?.clientY || (window.innerHeight / 2));
+  }
+
+  function onCoinMouseDown(event) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    tap(1, event.clientX, event.clientY);
+  }
+
+  async function refreshState() {
+    if (tapFlushTimerRef.current) {
+      clearTimeout(tapFlushTimerRef.current);
+      tapFlushTimerRef.current = null;
+    }
+    await flushTapBuffer();
+    await loadState();
+  }
+
+  useEffect(() => {
+    loadState();
+    loadNfts();
+    loadMyNfts();
+
+    tapSyncTimerRef.current = setInterval(() => {
+      flushTapBuffer();
+    }, TAP_SYNC_INTERVAL_MS);
+
+    return () => {
+      if (tapFlushTimerRef.current) clearTimeout(tapFlushTimerRef.current);
+      if (tapSyncTimerRef.current) clearInterval(tapSyncTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tab === "chain") loadChain();
+    if (tab === "deposit" && state?.is_admin) adminLoadDeposits();
+    if (tab === "wallet") {
+      loadBankLoans();
+      loadP2P();
+    }
+    if (tab === "market") {
+      loadListings();
+      loadMyListings();
+    }
+  }, [tab]);
+
+  if (!tg?.initData) {
+    return (
+      <main className="app">
+        <section className="card panel">
+          <div className="headline">Mini App РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ РІ Telegram</div>
+          <div className="muted">РћС‚РєСЂРѕР№ С‡РµСЂРµР· РєРЅРѕРїРєСѓ MINI APP РІ Р±РѕС‚Рµ.</div>
+        </section>
+      </main>
+    );
+  }
+
+  if (loading && !state) {
+    return (
+      <main className="app">
+        <section className="card panel">
+          <div className="headline">Р—Р°РіСЂСѓР·РєР°...</div>
+          <div className="muted">РџРѕРґРєР»СЋС‡Р°СЋСЃСЊ Рє backend API: {LAST_API_BASE || getApiBaseForPath("state")}</div>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <>
+      <main className="app">
+      <header className="card header">
+        <div className="user-info">
+          <img className="avatar" src={avatar || DEFAULT_COIN_IMG} alt="avatar" />
+          <div className="user-details">
+            <div className="name">{name}</div>
+            <div className="level">Level {level}</div>
+          </div>
+        </div>
+        <div className="balance-section">
+          <div className="balance-amount">{format(state?.balance || 0)}</div>
+          <div className="balance-label">BKC</div>
+          <button 
+            className="btn btn-icon" 
+            onClick={toggleLanguage}
+            style={{ marginLeft: '8px' }}
+            title="Переключить язык"
+          >
+            {language === 'ru' ? '????' : '????'}
+          </button>
+        </div>
+      </header>
+
+      <section className="card stats-grid">
+        <div className="stat-card">
+          <div className="stat-value">{format(tapsTotal)}</div>
+          <div className="stat-label">{t('taps')}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-value">{format(energy)} / {format(energyMax)}</div>
+          <div className="stat-label">{t('energy')}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-value">{format(rate)}</div>
+          <div className="stat-label">{t('bkcPerDollar')}</div>
+        </div>
+      </section>
+
+      <nav className="card tabs">
+        <button className={`nav-tab ${tab === "tap" ? "active" : ""}`} onClick={() => setTab("tap")}>
+          <span className="nav-icon">??</span>
+          <span className="nav-label">{t('tapTab')}</span>
+        </button>
+        <button className={`nav-tab ${tab === "wallet" ? "active" : ""}`} onClick={() => setTab("wallet")}>
+          <span className="nav-icon">??</span>
+          <span className="nav-label">{t('walletTab')}</span>
+        </button>
+        <button className={`nav-tab ${tab === "market" ? "active" : ""}`} onClick={() => setTab("market")}>
+          <span className="nav-icon">??</span>
+          <span className="nav-label">{t('marketTab')}</span>
+        </button>
+        <button className={`nav-tab ${tab === "deposit" ? "active" : ""}`} onClick={() => setTab("deposit")}>
+          <span className="nav-icon">??</span>
+          <span className="nav-label">{t('depositTab')}</span>
+        </button>
+        <button className={`nav-tab ${tab === "chain" ? "active" : ""}`} onClick={() => setTab("chain")}>
+          <span className="nav-icon">??</span>
+          <span className="nav-label">{t('chainTab')}</span>
+        </button>
+      </nav>
+
+      <section className="card panel">
+        {message && <div className={`message ${message.type}`}>{message.text}</div>}
+
+        {tab === "tap" && (
+          <>
+            <div className="panel-header">
+              <h2 className="panel-title">{t('tapEngine')}</h2>
+            </div>
+            <div className="tap-zone">
+              <div className="coin-container">
+                <div className="coin-glow"></div>
+                <div className="coin" onTouchStart={onCoinTouchStart} onMouseDown={onCoinMouseDown}>
+                  <div className="coin-text">{t('taps')}</div>
+                </div>
+              </div>  
+              {floating.map((f) => (
+                  <span key={f.id} className="float" style={{ left: `${f.x}px`, top: `${f.y}px` }}>
+                    {f.text}
+                  </span>
+                ))}
+            </div>
+            <div className="energy-bar">
+              <div className="energy-header">
+                <span className="energy-label">{t('energy')}</span>
+                <span className="energy-value">{format(energy)} / {format(energyMax)}</span>
+              </div>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${energyPct}%` }}></div>
+              </div>
+            </div>
+            {dailyLimit > 0 && (
+              <div className="panel-subtitle">
+                РЎРµРіРѕРґРЅСЏ: {format(dailyTapped)} / {format(Math.max(0, dailyLimit + dailyExtraQuota))} вЂў РћСЃС‚Р°Р»РѕСЃСЊ: {format(dailyRemaining)}
+              </div>
+            )}
+            <div className="grid-2 mt-16">
+              <button className="btn btn-primary" onClick={refreshState}>РћР±РЅРѕРІРёС‚СЊ</button>
+              <button className="btn btn-secondary" onClick={flushTapBuffer}>РЎРёРЅС…СЂРѕРЅРёР·РёСЂРѕРІР°С‚СЊ</button>
+            </div>
+          </>
+        )}
+
+	        {tab === "wallet" && (
+	          <>
+	            <div className="headline">РљРѕС€РµР»РµРє</div>
+	            <div className="address">{state?.address}</div>
+	            <div className="muted" style={{ marginTop: 6 }}>Доступно: {format(state?.balance || 0)} BKC • Заморожено: {format(frozenBalance)} BKC</div>
+	            <div className="grid2" style={{ marginTop: 8 }}>
+	              <button
+	                className="btn"
+	                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(state?.address || "");
+                    setMessage({ type: "info", text: "РђРґСЂРµСЃ СЃРєРѕРїРёСЂРѕРІР°РЅ" });
+                  } catch {}
+                }}
+              >РЎРєРѕРїРёСЂРѕРІР°С‚СЊ</button>
+              <button className="btn primary" onClick={loadState}>РћР±РЅРѕРІРёС‚СЊ</button>
+            </div>
+
+	            <div className="headline" style={{ marginTop: 10 }}>РџРµСЂРµРІРѕРґ</div>
+	            <div className="row">
+	              <input className="input" placeholder="РљРѕРјСѓ (BKC123 РёР»Рё 123)" value={toAddress} onChange={(e) => setToAddress(e.target.value)} />
+	              <input className="input" type="number" min="1" placeholder="РЎСѓРјРјР° (BKC)" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)} />
+	              <button className="btn primary" onClick={transfer}>РџРµСЂРµРІРµСЃС‚Рё</button>
+	            </div>
+
+	            <div className="headline" style={{ marginTop: 10 }}>Заморозка средств</div>
+	            <div className="muted">Заморозка переводит BKC из доступного баланса в замороженный. Их нельзя тратить, пока не разморозишь.</div>
+	            <div className="row" style={{ marginTop: 8 }}>
+	              <input className="input" type="number" min="1" placeholder="Сумма (BKC)" value={freezeAmount} onChange={(e) => setFreezeAmount(e.target.value)} />
+	              <div className="grid2">
+	                <button className="btn warn" onClick={freezeFunds}>Заморозить</button>
+	                <button className="btn" onClick={unfreezeFunds}>Разморозить</button>
+	              </div>
+	            </div>
+
+	            <div className="headline" style={{ marginTop: 10 }}>{t('admin')}: {t('requests')}</div>
+	            {myNfts?.length ? (
+	              <div className="wallets">
+                {myNfts.map((n) => (
+                  <div key={n.nft_id} className="wallet-item">
+                    <div className="k">{n.title}</div>
+                    <div className="v">x{format(n.qty)}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted">РџРѕРєР° РЅРµС‚ NFT.</div>
+            )}
+
+            <div className="headline" style={{ marginTop: 12 }}>Р‘Р°РЅРє</div>
+            <div className="muted">
+              РљСЂРµРґРёС‚ РјРѕР¶РЅРѕ РїРѕРіР°СЃРёС‚СЊ РІ Р»СЋР±РѕРµ РІСЂРµРјСЏ. Р•СЃР»Рё РїСЂРѕСЃСЂРѕС‡РёС€СЊ, СЃРёСЃС‚РµРјР° Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё СЃРїРёС€РµС‚ РґРѕР»Рі Рё Р±Р°Р»Р°РЅСЃ РјРѕР¶РµС‚ СѓР№С‚Рё РІ РјРёРЅСѓСЃ.
+            </div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <input className="input" type="number" min="1" placeholder={`РЎСѓРјРјР° (РґРѕ ${format(loanMax || 0)} BKC)`} value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} />
+              <div className="grid2">
+                <button className="btn warn" onClick={() => takeLoan("7d")}>
+                  Р’Р·СЏС‚СЊ 7Рґ ({Math.round((loan7BP || 0) / 100)}%)
+                </button>
+                <button className="btn warn" onClick={() => takeLoan("30d")}>
+                  Р’Р·СЏС‚СЊ 30Рґ ({Math.round((loan30BP || 0) / 100)}%)
+                </button>
+              </div>
+              <div className="muted">
+                РџСЂРёРјРµСЂ: 7Рґ РІСЃРµРіРѕ Рє РІРѕР·РІСЂР°С‚Сѓ = {format(calcLoanTotal(clampInt(loanAmount || 0, 0, 500_000_000, 0), loan7BP))} BKC
+              </div>
+            </div>
+
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={loadBankLoans}>РњРѕРё РєСЂРµРґРёС‚С‹</button>
+              <button className="btn secondary" onClick={loadState}>РћР±РЅРѕРІРёС‚СЊ Р±Р°Р»Р°РЅСЃ</button>
+            </div>
+            {bankLoans?.length ? (
+              <div className="wallets" style={{ marginTop: 8 }}>
+                {bankLoans.map((l) => (
+                  <div key={l.loan_id} className="wallet-item">
+                    <div className="k">#{l.loan_id} вЂў {String(l.status || "").toUpperCase()} вЂў {l.term_days}d</div>
+                    <div className="v">
+                      РЎСѓРјРјР°: {format(l.principal)} вЂў РџСЂРѕС†РµРЅС‚: {format(l.interest)} вЂў Рљ РІРѕР·РІСЂР°С‚Сѓ: {format(l.total_due)}
+                    </div>
+                    <div className="muted">Р”РµРґР»Р°Р№РЅ: {l.due_at ? new Date(l.due_at).toLocaleString("ru-RU") : "-"}</div>
+                    {String(l.status || "").toLowerCase() === "active" && (
+                      <button className="btn primary" onClick={() => repayLoan(l.loan_id)}>РџРѕРіР°СЃРёС‚СЊ</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted" style={{ marginTop: 8 }}>РђРєС‚РёРІРЅС‹С… РєСЂРµРґРёС‚РѕРІ РЅРµС‚.</div>
+            )}
+
+            <div className="headline" style={{ marginTop: 12 }}>P2P РґРѕР»РіРё</div>
+            <div className="muted">Р—Р°РїСЂРѕСЃРё РґРѕР»Рі Сѓ РґСЂСѓРіРѕРіРѕ РёРіСЂРѕРєР°. РџРѕРґС‚РІРµСЂР¶РґР°РµС‚ С‚РѕР»СЊРєРѕ РєСЂРµРґРёС‚РѕСЂ. Recall РґРѕСЃС‚СѓРїРµРЅ СЃРїСѓСЃС‚СЏ РјРёРЅРёРјСѓРј {p2pRecallMinDays} РґРЅРµР№ (РґР»СЏ РґР»РёРЅРЅС‹С… РґРѕР»РіРѕРІ) РёР»Рё РїСЂРё РїСЂРѕСЃСЂРѕС‡РєРµ.</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <input className="input" placeholder="РљСЂРµРґРёС‚РѕСЂ (ID РёР»Рё BKC123)" value={p2pLender} onChange={(e) => setP2pLender(e.target.value)} />
+              <div className="grid2">
+                <input className="input" type="number" min="1" placeholder="РЎСѓРјРјР° (BKC)" value={p2pAmount} onChange={(e) => setP2pAmount(e.target.value)} />
+                <input className="input" type="number" min="0" placeholder="РџСЂРѕС†РµРЅС‚ (РЅР° СЃСЂРѕРє, РЅР°РїСЂ 15)" value={p2pInterestPct} onChange={(e) => setP2pInterestPct(e.target.value)} />
+              </div>
+              <input className="input" type="number" min="1" max="365" placeholder="РЎСЂРѕРє (РґРЅРµР№)" value={p2pTermDays} onChange={(e) => setP2pTermDays(e.target.value)} />
+              <button className="btn primary" onClick={requestP2P}>РћС‚РїСЂР°РІРёС‚СЊ Р·Р°СЏРІРєСѓ</button>
+            </div>
+
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={loadP2P}>РћР±РЅРѕРІРёС‚СЊ P2P</button>
+              <button className="btn secondary" onClick={loadState}>РћР±РЅРѕРІРёС‚СЊ Р±Р°Р»Р°РЅСЃ</button>
+            </div>
+
+            {p2pIncoming?.length ? (
+              <>
+                <div className="headline" style={{ marginTop: 10 }}>Р’С…РѕРґСЏС‰РёРµ Р·Р°СЏРІРєРё (РјРЅРµ РґР°С‚СЊ РІ РґРѕР»Рі)</div>
+                <div className="wallets">
+                  {p2pIncoming.map((l) => (
+                    <div key={l.loan_id} className="wallet-item">
+                      <div className="k">#{l.loan_id} вЂў Р—РђРЇР’РљРђ</div>
+                      <div className="v">Р—Р°РµРјС‰РёРє: {l.borrower_id} вЂў РЎСѓРјРјР°: {format(l.principal)} вЂў Рљ РІРѕР·РІСЂР°С‚Сѓ: {format(l.total_due)} вЂў РЎСЂРѕРє: {l.term_days}Рґ</div>
+                      <div className="grid2" style={{ marginTop: 8 }}>
+                        <button className="btn good" onClick={() => acceptP2P(l.loan_id)}>РџРѕРґС‚РІРµСЂРґРёС‚СЊ</button>
+                        <button className="btn bad" onClick={() => rejectP2P(l.loan_id)}>РћС‚РєР»РѕРЅРёС‚СЊ</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+
+            <div className="headline" style={{ marginTop: 10 }}>РњРѕРё P2P РґРѕР»РіРё</div>
+            {p2pMy?.length ? (
+              <div className="wallets">
+                {p2pMy.map((l) => {
+                  const status = String(l.status || "").toLowerCase();
+                  const isBorrower = Number(l.borrower_id) === Number(state?.user_id);
+                  const isLender = Number(l.lender_id) === Number(state?.user_id);
+                  return (
+                    <div key={l.loan_id} className="wallet-item">
+                      <div className="k">#{l.loan_id} вЂў {status.toUpperCase()}</div>
+                      <div className="v">
+                        РљСЂРµРґРёС‚РѕСЂ: {l.lender_id} вЂў Р—Р°РµРјС‰РёРє: {l.borrower_id} вЂў РЎСѓРјРјР°: {format(l.principal)} вЂў Рљ РІРѕР·РІСЂР°С‚Сѓ: {format(l.total_due)} вЂў РЎСЂРѕРє: {l.term_days}Рґ
+                      </div>
+                      <div className="muted">Р”РµРґР»Р°Р№РЅ: {l.due_at ? new Date(l.due_at).toLocaleString("ru-RU") : "-"}</div>
+                      {status === "active" && isBorrower && (
+                        <button className="btn primary" onClick={() => repayP2P(l.loan_id)}>РџРѕРіР°СЃРёС‚СЊ</button>
+                      )}
+                      {status === "active" && isLender && (
+                        <button className="btn warn" onClick={() => recallP2P(l.loan_id)}>Р’РµСЂРЅСѓС‚СЊ РґРµРЅСЊРіРё (Recall)</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="muted">P2P РґРѕР»РіРѕРІ РїРѕРєР° РЅРµС‚.</div>
+            )}
+          </>
+        )}
+
+        {tab === "market" && (
+          <>
+            <div className="headline">РњР°РіР°Р·РёРЅ</div>
+
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <div className="wallet-item">
+                <div className="k">{t('energy1h')}</div>
+                <div className="v">{format(state?.prices?.ENERGY_1H || 25000)} BKC</div>
+                <button className="btn warn" onClick={buyEnergy1h}>РљСѓРїРёС‚СЊ</button>
+              </div>
+              {dailyLimit > 0 && tapPackSize > 0 && tapPackPrice > 0 && (
+                <div className="wallet-item">
+                  <div className="k">Р”РѕРї. Р»РёРјРёС‚ С‚Р°РїРѕРІ</div>
+                  <div className="v">+{format(tapPackSize)} СЃРµРіРѕРґРЅСЏ вЂў {format(tapPackPrice)} BKC</div>
+                  <button className="btn warn" onClick={buyTapPack}>РљСѓРїРёС‚СЊ</button>
+                </div>
+              )}
+              <div className="wallet-item">
+                <div className="k">NFT</div>
+                <div className="v">РњР°РіР°Р·РёРЅ NFT</div>
+                <button className="btn" onClick={() => { loadNfts(); loadMyNfts(); }}>РћР±РЅРѕРІРёС‚СЊ</button>
+              </div>
+            </div>
+
+            <div className="headline" style={{ marginTop: 10 }}>{t('nftShop')}</div>
+            {nfts?.length ? (
+              <div className="grid2">
+                {nfts.map((n) => (
+                  <div key={n.nft_id} className="mini-card">
+                    <img src={n.image_url} alt={n.title} />
+                    <div style={{ padding: 10, display: "grid", gap: 8 }}>
+                      <div className="mini-card__meta" style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                        <div className="mini-card__title" style={{ fontWeight: 800, fontSize: 12 }}>{n.title}</div>
+                        <div className="mini-card__price" style={{ fontFamily: '\"Russo One\", system-ui, sans-serif', color: 'var(--accent)' }}>{format(n.price_coins)} BKC</div>
+                      </div>
+                      <div className="muted">РћСЃС‚Р°Р»РѕСЃСЊ: {format(n.supply_left)}</div>
+                      <button className="btn primary" onClick={() => buyNft(n.nft_id)} disabled={Number(n.supply_left) <= 0}>РљСѓРїРёС‚СЊ</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted">NFT РїРѕРєР° РЅРµС‚.</div>
+            )}
+
+            <div className="headline" style={{ marginTop: 12 }}>Р‘Р°СЂР°С…РѕР»РєР° (РѕР±СЉСЏРІР»РµРЅРёСЏ)</div>
+            <div className="muted">РљРѕРјРёСЃСЃРёСЏ Р·Р° СЂР°Р·РјРµС‰РµРЅРёРµ: {format(listingFee)} BKC (СЃР¶РёРіР°РµС‚СЃСЏ). РњРѕР¶РЅРѕ РїСЂРѕРґР°РІР°С‚СЊ РІРёСЂС‚СѓР°Р»СЊРЅРѕРµ/С„РёР·РёС‡РµСЃРєРѕРµ, Р° РґР»СЏ СЃРґРµР»РєРё РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РєРѕРЅС‚Р°РєС‚.</div>
+
+            <div className="row" style={{ marginTop: 8 }}>
+              <input className="input" placeholder="РќР°Р·РІР°РЅРёРµ С‚РѕРІР°СЂР°" value={listingTitle} onChange={(e) => setListingTitle(e.target.value)} />
+              <textarea className="input" rows="3" placeholder="РћРїРёСЃР°РЅРёРµ" value={listingDesc} onChange={(e) => setListingDesc(e.target.value)}></textarea>
+              <div className="grid2">
+	                <select className="select" value={listingCategory} onChange={(e) => setListingCategory(e.target.value)}>
+	                  <option value="other">Р”СЂСѓРіРѕРµ</option>
+	                  <option value="virtual">Р’РёСЂС‚СѓР°Р»СЊРЅРѕРµ</option>
+	                  <option value="physical">Р¤РёР·РёС‡РµСЃРєРѕРµ</option>
+	                  <option value="fiat">Р¤РёР°С‚/РѕР±РјРµРЅ</option>
+	                </select>
+                <input className="input" type="number" min="1" placeholder="Р¦РµРЅР° (BKC)" value={listingPrice} onChange={(e) => setListingPrice(e.target.value)} />
+              </div>
+              <input className="input" placeholder="@username РёР»Рё РЅРѕРјРµСЂ" value={listingContact} onChange={(e) => setListingContact(e.target.value)} />
+              <input className="input" type="file" accept="image/*" onChange={(e) => setListingImageFile(e.target.files?.[0] || null)} />
+              <button className="btn primary" onClick={createListing}>Р Р°Р·РјРµСЃС‚РёС‚СЊ</button>
+            </div>
+
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={loadListings}>РћР±РЅРѕРІРёС‚СЊ Р»РµРЅС‚Сѓ</button>
+              <button className="btn" onClick={loadMyListings}>РњРѕРё РѕР±СЉСЏРІР»РµРЅРёСЏ</button>
+            </div>
+
+	            {listings?.length ? (
+	              <>
+	                <div className="headline" style={{ marginTop: 10 }}>Р›РµРЅС‚Р°</div>
+	                <div className="listings-grid">
+	                  {listings.map((l) => (
+	                    <div key={l.listing_id} className="mini-card listing-card">
+	                      <img
+	                        src={l.image_id ? `${getApiBaseForPath("assets/listings")}/api/v1/assets/listings/${l.image_id}` : "https://via.placeholder.com/800x400.png?text=BKC+Market"}
+	                        alt={l.title}
+	                        loading="lazy"
+	                      />
+	                      <div style={{ padding: 10, display: "grid", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                          <div style={{ fontWeight: 800, fontSize: 12 }}>{l.title}</div>
+                          <div style={{ fontFamily: '\"Russo One\", system-ui, sans-serif', color: 'var(--accent)' }}>{format(l.price_coins)} BKC</div>
+                        </div>
+	                        <div className="muted">{String(l.category || "other")}</div>
+	                        <div className="muted" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{l.description}</div>
+	                        <div className="address">РљРѕРЅС‚Р°РєС‚: {l.contact}</div>
+	                        <button className="btn primary" onClick={() => buyListing(l)}>
+	                          {(() => {
+	                            const cat = String(l.category || "").toLowerCase();
+	                            return cat === "fiat" || cat === "exchange" ? "Купить (фиат)" : "Купить";
+	                          })()}
+	                        </button>
+	                        {state?.is_admin && (
+	                          <button className="btn bad" onClick={() => adminDeleteListing(l.listing_id)}>Удалить</button>
+	                        )}
+	                      </div>
+	                    </div>
+	                  ))}
+	                </div>
+	              </>
+            ) : (
+              <div className="muted" style={{ marginTop: 8 }}>РџРѕРєР° РѕР±СЉСЏРІР»РµРЅРёР№ РЅРµС‚.</div>
+            )}
+
+            {myListings?.length ? (
+              <>
+                <div className="headline" style={{ marginTop: 10 }}>РњРѕРё РѕР±СЉСЏРІР»РµРЅРёСЏ</div>
+                <div className="wallets">
+                  {myListings.map((l) => (
+                    <div key={l.listing_id} className="wallet-item">
+                      <div className="k">#{l.listing_id} вЂў {String(l.status || "").toUpperCase()} вЂў {format(l.price_coins)} BKC</div>
+                      <div className="v">{l.title}</div>
+                      <div className="muted">{l.description}</div>
+                      {String(l.status || "").toLowerCase() === "active" && (
+                        <button className="btn bad" onClick={() => cancelListing(l.listing_id)}>РЎРЅСЏС‚СЊ СЃ РїСЂРѕРґР°Р¶Рё</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+
+            {state?.is_admin && (
+              <>
+                <div className="headline" style={{ marginTop: 10 }}>{t('admin')}</div>
+                <div className="muted">Р”РѕР±Р°РІРёС‚СЊ NFT</div>
+                <div className="row">
+                  <input className="input" placeholder="РќР°Р·РІР°РЅРёРµ" value={nftTitle} onChange={(e) => setNftTitle(e.target.value)} />
+                  <input className="input" placeholder="Image URL (РёР»Рё /assets/nft.jpg)" value={nftImageURL} onChange={(e) => setNftImageURL(e.target.value)} />
+                  <input className="input" type="number" min="1" placeholder="Р¦РµРЅР° (BKC)" value={nftPrice} onChange={(e) => setNftPrice(e.target.value)} />
+                  <input className="input" type="number" min="1" placeholder="Supply" value={nftSupply} onChange={(e) => setNftSupply(e.target.value)} />
+                  <button className="btn primary" onClick={adminCreateNft}>Р”РѕР±Р°РІРёС‚СЊ NFT</button>
+                </div>
+
+                <div className="muted" style={{ marginTop: 10 }}>РџРµСЂРµРІРѕРґ РёР· СЂРµР·РµСЂРІР°</div>
+                <div className="row">
+                  <input className="input" placeholder="User ID" value={adminToUser} onChange={(e) => setAdminToUser(e.target.value)} />
+                  <input className="input" type="number" min="1" placeholder="Amount (BKC)" value={adminGiveAmount} onChange={(e) => setAdminGiveAmount(e.target.value)} />
+                  <button className="btn primary" onClick={adminReserveSend}>РћС‚РїСЂР°РІРёС‚СЊ</button>
+                </div>
+
+                <div className="muted" style={{ marginTop: 10 }}>Р Р°СЃСЃС‹Р»РєР° (РІСЃРµРј РїРѕР»СЊР·РѕРІР°С‚РµР»СЏРј)</div>
+                <div className="row">
+                  <textarea className="input" rows="3" placeholder="РўРµРєСЃС‚ СЂР°СЃСЃС‹Р»РєРё" value={broadcastText} onChange={(e) => setBroadcastText(e.target.value)}></textarea>
+                  <button className="btn primary" onClick={adminBroadcast}>Р—Р°РїСѓСЃС‚РёС‚СЊ</button>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {tab === "deposit" && (
+          <>
+            <div className="headline">РџРѕРїРѕР»РЅРµРЅРёРµ</div>
+            <div className="muted">РљСѓСЂСЃ: {format(rate)} BKC = $1</div>
+
+            <div className="headline" style={{ marginTop: 10 }}>CryptoBot (CryptoPay)</div>
+            <div className="row">
+              <button className="btn primary" onClick={createCryptoPayInvoice}>РЎРѕР·РґР°С‚СЊ РёРЅРІРѕР№СЃ</button>
+              {invoice?.invoice_id && <button className="btn" onClick={checkCryptoPayInvoice}>РџСЂРѕРІРµСЂРёС‚СЊ</button>}
+            </div>
+            {invoice?.invoice_id && (
+              <div className="address">{t('invoice')} #{invoice.invoice_id} • {invoice.status || "?"} • +{format(invoice.coins)} BKC</div>
+            )}
+
+            <div className="headline" style={{ marginTop: 10 }}>{t('depositToWallet')} (Р°РґРјРёРЅ РїРѕРґС‚РІРµСЂР¶РґР°РµС‚)</div>
+            {Object.keys(state?.deposit_wallets || {}).length ? (
+              <div className="wallets">
+                {Object.entries(state?.deposit_wallets || {}).map(([k, v]) => (
+                  <div key={k} className="wallet-item">
+                    <div className="k">{k}</div>
+                    <div
+                      className="v copy"
+                      onClick={() => {
+                        try {
+                          navigator.clipboard.writeText(String(v || ""));
+                          setMessage({ type: "info", text: `${k} Р°РґСЂРµСЃ СЃРєРѕРїРёСЂРѕРІР°РЅ` });
+                        } catch {}
+                      }}
+                      title="РќР°Р¶РјРё С‡С‚РѕР±С‹ СЃРєРѕРїРёСЂРѕРІР°С‚СЊ"
+                    >{v}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted">РљРѕС€РµР»СЊРєРё РґР»СЏ РїРѕРїРѕР»РЅРµРЅРёСЏ РЅРµ РЅР°СЃС‚СЂРѕРµРЅС‹.</div>
+            )}
+
+            {state?.is_admin && (
+              <>
+                {!walletEditorOpen ? (
+                  <div className="grid2" style={{ marginTop: 8 }}>
+                    <button className="btn" onClick={() => setWalletEditorOpen(true)}>Редактировать кошельки</button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="headline" style={{ marginTop: 10 }}>{t('admin')}: кошельки</div>
+                    {(walletDraft || []).map((r, idx) => (
+                      <div className="row" key={idx}>
+                        <input className="input" placeholder="Ключ (например USDT_TRC20)" value={r.k} onChange={(e) => updateWalletRow(idx, "k", e.target.value)} />
+                        <input className="input" placeholder="Адрес" value={r.v} onChange={(e) => updateWalletRow(idx, "v", e.target.value)} />
+                        <button className="btn bad" onClick={() => removeWalletRow(idx)}>?</button>
+                      </div>
+                    ))}
+                    <div className="grid2" style={{ marginTop: 8 }}>
+                      <button className="btn" onClick={addWalletRow}>+ Добавить</button>
+                      <button className="btn primary" onClick={saveWallets}>Сохранить</button>
+                    </div>
+                    <button className="btn" style={{ marginTop: 8 }} onClick={() => setWalletEditorOpen(false)}>Закрыть</button>
+                  </>
+                )}
+              </>
+            )}
+
+            <div className="row">
+              <select className="select" value={depositCurrency} onChange={(e) => setDepositCurrency(e.target.value)}>
+                <option value="USDT">{t('usdt')}</option>
+                <option value="TRX">{t('trx')}</option>
+                <option value="SOL">{t('sol')}</option>
+              </select>
+              <input className="input" type="number" min="1" placeholder="Сумма в USD" value={depositUsd} onChange={(e) => setDepositUsd(e.target.value)} />
+              <input className="input" placeholder="TX hash" value={depositTx} onChange={(e) => setDepositTx(e.target.value)} />
+              <button className="btn primary" onClick={createDeposit}>Создать заявку</button>
+            </div>
+
+            {state?.is_admin && (
+              <>
+                <div className="headline" style={{ marginTop: 10 }}>{t('admin')}: заявки</div>
+                <button className="btn" onClick={adminLoadDeposits}>Обновить</button>
+                {adminDeposits?.length ? (
+                  <div className="wallets">
+                    {adminDeposits.map((d) => (
+                      <div key={d.deposit_id} className="wallet-item">
+                        <div className="k">#{d.deposit_id} • user {d.user_id} • {d.currency} • ${d.amount_usd} => {format(d.coins)} BKC</div>
+                        <div className="v">{d.tx_hash}</div>
+                        <div className="grid2" style={{ marginTop: 8 }}>
+                          <button className="btn good" onClick={() => adminProcessDeposit(d.deposit_id, true)}>Подтвердить</button>
+                          <button className="btn bad" onClick={() => adminProcessDeposit(d.deposit_id, false)}>Отклонить</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted">Нет pending заявок.</div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {tab === "chain" && (
+          <>
+            <div className="headline">{t('blockchain')}</div>
+            <button className="btn primary" onClick={loadChain}>РћР±РЅРѕРІРёС‚СЊ СЃРµС‚СЊ</button>
+            <div className="blockchain-grid">
+              <div className="item">
+                <div className="v">{format(chain?.users || 0)}</div>
+                <div className="l">{t('users')}</div>
+              </div>
+              <div className="item">
+                <div className="v">{format(chain?.txs || 0)}</div>
+                <div className="l">{t('transactions')}</div>
+              </div>
+              <div className="item">
+                <div className="v">{format(chain?.taps_minted || 0)}</div>
+                <div className="l">{t('tapped')}</div>
+              </div>
+              <div className="item">
+                <div className="v">{format(chain?.reserve_supply || 0)}</div>
+                <div className="l">{t('reserve')}</div>
+              </div>
+            </div>
+            <button className="btn" style={{ marginTop: 8 }} onClick={() => setWalletEditorOpen(false)}>Р—Р°РєСЂС‹С‚СЊ</button>
+          </>
+        )}
+      </section>
+
+      <nav className="bottom-nav">
+        <div className="nav-tabs">
+          <button className={`nav-tab ${tab === "tap" ? "active" : ""}`} onClick={() => setTab("tap")}>
+            <span className="nav-icon">??</span>
+            <span className="nav-label">{t('tapEngine')}</span>
+          </button>
+          <button className={`nav-tab ${tab === "wallet" ? "active" : ""}`} onClick={() => setTab("wallet")}>
+            <span className="nav-icon">??</span>
+            <span className="nav-label">{t('wallet')}</span>
+          </button>
+          <button className={`nav-tab ${tab === "market" ? "active" : ""}`} onClick={() => setTab("market")}>
+            <span className="nav-icon">??</span>
+            <span className="nav-label">{t('market')}</span>
+          </button>
+          <button className={`nav-tab ${tab === "deposit" ? "active" : ""}`} onClick={() => setTab("deposit")}>
+            <span className="nav-icon">??</span>
+            <span className="nav-label">{t('deposit')}</span>
+          </button>
+          <button className={`nav-tab ${tab === "chain" ? "active" : ""}`} onClick={() => setTab("chain")}>
+            <span className="nav-icon">??</span>
+            <span className="nav-label">{t('chain')}</span>
+          </button>
+        </div>
+      </nav>
+      </main>
+    </>
+  );
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />)  

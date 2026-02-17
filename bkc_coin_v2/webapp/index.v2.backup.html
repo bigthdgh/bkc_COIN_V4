@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>BKC Coin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg0: #070A12;
+      --bg1: #0E1630;
+      --card: rgba(255,255,255,0.06);
+      --stroke: rgba(255,255,255,0.12);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --accent: #00E5FF;
+      --accent2: #FFB020;
+      --shadow: 0 18px 60px rgba(0,0,0,0.45);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 800px at 10% 10%, rgba(0,229,255,0.20), transparent 60%),
+        radial-gradient(1000px 700px at 90% 20%, rgba(255,176,32,0.18), transparent 55%),
+        radial-gradient(900px 700px at 50% 110%, rgba(130,87,229,0.22), transparent 60%),
+        linear-gradient(180deg, var(--bg0), var(--bg1));
+      font-family: "Space Grotesk", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      overflow: hidden;
+    }
+
+    #root { height: 100%; }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+      padding: 14px;
+      max-width: 980px;
+      margin: 0 auto;
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 12px;
+      border: 1px solid var(--stroke);
+      background: linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03));
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .pill {
+      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      color: rgba(255,255,255,0.85);
+      border: 1px solid rgba(255,255,255,0.16);
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(0,0,0,0.20);
+      white-space: nowrap;
+    }
+
+    .name {
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 44vw;
+    }
+
+    .balance {
+      text-align: right;
+    }
+
+    .balance strong {
+      display: block;
+      font-size: 20px;
+      line-height: 1.05;
+      letter-spacing: 0.2px;
+    }
+
+    .balance span {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .panel {
+      border: 1px solid var(--stroke);
+      background: var(--card);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      overflow: hidden;
+    }
+
+    .panelInner {
+      padding: 12px;
+      height: 100%;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--stroke);
+      background: rgba(0,0,0,0.20);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .tab {
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.05);
+      border-radius: 14px;
+      padding: 12px;
+      color: rgba(255,255,255,0.84);
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+
+    .tab.active {
+      border-color: rgba(0,229,255,0.55);
+      background: linear-gradient(180deg, rgba(0,229,255,0.18), rgba(255,176,32,0.10));
+      color: rgba(255,255,255,0.96);
+    }
+
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .muted { color: var(--muted); font-size: 13px; }
+
+    .msg {
+      margin-bottom: 10px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.25);
+      padding: 10px 12px;
+      border-radius: 14px;
+      font-size: 13px;
+    }
+
+    .msg.good { border-color: rgba(37,211,102,0.35); }
+    .msg.bad { border-color: rgba(255,77,77,0.40); }
+
+    .coinZone {
+      display: grid;
+      place-items: center;
+      height: calc(100vh - 240px);
+      min-height: 320px;
+      position: relative;
+      user-select: none;
+      touch-action: none;
+    }
+
+    .coin {
+      width: min(300px, 72vw);
+      aspect-ratio: 1;
+      border-radius: 999px;
+      position: relative;
+      transform: translateZ(0);
+    }
+
+    .coin::before {
+      content: "";
+      position: absolute;
+      inset: -10px;
+      border-radius: 999px;
+      background:
+        conic-gradient(from 30deg,
+          rgba(0,229,255,0.95),
+          rgba(255,176,32,0.95),
+          rgba(160,96,255,0.95),
+          rgba(0,229,255,0.95)
+        );
+      opacity: 0.9;
+      box-shadow: 0 0 90px rgba(0,229,255,0.12);
+    }
+
+    .coin::after {
+      content: "";
+      position: absolute;
+      inset: -2px;
+      border-radius: 999px;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.22), rgba(255,255,255,0.05) 55%, rgba(0,0,0,0.35));
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow: inset 0 10px 30px rgba(255,255,255,0.06);
+    }
+
+    .coinInner {
+      position: absolute;
+      inset: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 25% 20%, rgba(0,229,255,0.12), rgba(0,0,0,0.55));
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+
+    .coinImg {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      filter: saturate(1.1) contrast(1.05);
+      transform: scale(1.02);
+    }
+
+    .coinFallback {
+      display: grid;
+      place-items: center;
+      width: 100%;
+      height: 100%;
+      font-weight: 800;
+      font-size: 48px;
+      letter-spacing: 1.2px;
+      color: rgba(255,255,255,0.90);
+      text-shadow: 0 20px 40px rgba(0,0,0,0.55);
+    }
+
+    .float {
+      position: absolute;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 16px;
+      font-weight: 700;
+      pointer-events: none;
+      animation: floatUp 700ms ease-out forwards;
+      color: rgba(255,255,255,0.95);
+      text-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    }
+
+    @keyframes floatUp {
+      0% { transform: translate(-50%, 0) scale(1); opacity: 0.0; }
+      10% { opacity: 1.0; }
+      100% { transform: translate(-50%, -70px) scale(1.15); opacity: 0.0; }
+    }
+
+    .bar {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(0,0,0,0.20);
+    }
+
+    .barTop { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .barTop strong { font-size: 12px; letter-spacing: 0.5px; }
+
+    .barTrack {
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      overflow: hidden;
+      margin-top: 10px;
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+
+    .barFill {
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, rgba(0,229,255,0.95), rgba(255,176,32,0.95));
+    }
+
+    .btn {
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.92);
+      padding: 12px 14px;
+      border-radius: 14px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+    }
+
+    .btn.primary {
+      border-color: rgba(0,229,255,0.35);
+      background: linear-gradient(180deg, rgba(0,229,255,0.18), rgba(255,176,32,0.12));
+    }
+
+    .input {
+      flex: 1;
+      min-width: 140px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.25);
+      color: var(--text);
+      padding: 12px 12px;
+      border-radius: 14px;
+      outline: none;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .card {
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.22);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    .nftImg {
+      width: 100%;
+      height: 110px;
+      object-fit: cover;
+      display: block;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .cardBody {
+      padding: 10px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    @media (max-width: 520px) {
+      .tabs { grid-template-columns: 1fr; }
+      .coinZone { height: calc(100vh - 300px); }
+      .name { max-width: 62vw; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      try {
+        tg.setHeaderColor("#0E1630");
+        tg.setBackgroundColor("#070A12");
+      } catch {}
+    }
+
+    const format = (n) => Number(n || 0).toLocaleString("ru-RU");
+    const apiParam = new URLSearchParams(window.location.search).get("api");
+    const fallbackApi = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost")
+      ? "http://127.0.0.1:8080"
+      : window.location.origin;
+    const API_BASE = (apiParam || fallbackApi).replace(/\/$/, "");
+
+    const MAX_MULTITOUCH = 13;
+    const TAP_BATCH_WINDOW_MS = 90;
+    const TAP_SYNC_INTERVAL_MS = 650;
+    const MAX_TAP_BATCH = 500;
+
+    async function post(path, payload = {}) {
+      const res = await fetch(`${API_BASE}/api/v1/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          init_data: tg?.initData || "",
+          ...payload,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || "Ошибка API");
+      }
+      return json.data;
+    }
+
+    function App() {
+      const [tab, setTab] = useState("tap");
+      const [state, setState] = useState(null);
+      const [message, setMessage] = useState(null);
+      const [floats, setFloats] = useState([]);
+
+      const [to, setTo] = useState("");
+      const [amount, setAmount] = useState("100");
+
+      const [nfts, setNfts] = useState([]);
+      const [myNfts, setMyNfts] = useState([]);
+
+      const [usd, setUsd] = useState("1");
+      const [invoice, setInvoice] = useState(null); // { invoice_id, url, status, amount_usd, coins }
+
+      const [nftTitle, setNftTitle] = useState("");
+      const [nftImageURL, setNftImageURL] = useState("");
+      const [nftPrice, setNftPrice] = useState("50000");
+      const [nftSupply, setNftSupply] = useState("100");
+
+      const [adminToUser, setAdminToUser] = useState("");
+      const [adminGiveAmount, setAdminGiveAmount] = useState("10000");
+
+      const tapBufferRef = useRef(0);
+      const tapFlushTimerRef = useRef(null);
+      const tapSyncTimerRef = useRef(null);
+      const inFlightRef = useRef(false);
+
+      const user = tg?.initDataUnsafe?.user || {};
+      const name = state?.first_name || user.first_name || "Player";
+      const balance = state?.balance || 0;
+      const energy = state?.energy || 0;
+      const energyMax = state?.energy_max || 0;
+      const rate = state?.coins_per_usd || 0;
+
+      const energyPct = useMemo(() => {
+        if (!energyMax) return 0;
+        return Math.max(0, Math.min(100, Math.round((energy / energyMax) * 100)));
+      }, [energy, energyMax]);
+
+      async function load() {
+        const data = await post("state", {});
+        setState(data);
+      }
+
+      async function loadNfts() {
+        const data = await post("nfts/list", {});
+        setNfts(data.items || []);
+      }
+
+      async function loadMyNfts() {
+        const data = await post("nfts/my", {});
+        setMyNfts(data.items || []);
+      }
+
+      async function buyNft(nftId) {
+        try {
+          const data = await post("nfts/buy", { nft_id: Number(nftId) });
+          setState(data);
+          setMessage({ type: "good", text: "NFT куплен" });
+          loadNfts().catch(() => {});
+          loadMyNfts().catch(() => {});
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        }
+      }
+
+      async function createInvoice() {
+        try {
+          const amountUsd = Math.max(1, Math.min(10000, Number(usd || 1)));
+          const data = await post("deposit/cryptopay/invoice", { amount_usd: amountUsd });
+          setInvoice(data);
+          setMessage({ type: "good", text: `Инвойс создан: $${data.amount_usd} => +${format(data.coins)} BKC` });
+          const url = data.url;
+          if (url) {
+            try { tg?.openLink?.(url); } catch {}
+            try { tg?.openTelegramLink?.(url); } catch {}
+            try { window.open(url, "_blank"); } catch {}
+          }
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        }
+      }
+
+      async function checkInvoice() {
+        try {
+          if (!invoice?.invoice_id) throw new Error("Нет invoice_id");
+          const data = await post("deposit/cryptopay/check", { invoice_id: Number(invoice.invoice_id) });
+          setState(data);
+          const info = data.cryptopay || {};
+          setInvoice((prev) => prev ? ({ ...prev, status: info.status || prev.status }) : prev);
+          setMessage({ type: "good", text: `Статус: ${info.status || "?"}. Начислено: ${format(info.credited || 0)} BKC` });
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        }
+      }
+
+      async function adminCreateNft() {
+        try {
+          const payload = {
+            title: nftTitle,
+            image_url: nftImageURL,
+            price_coins: Number(nftPrice),
+            supply_total: Number(nftSupply),
+          };
+          const data = await post("admin/nfts/create", payload);
+          setMessage({ type: "good", text: `NFT добавлен (#${data.nft_id})` });
+          setNftTitle("");
+          setNftImageURL("");
+          loadNfts().catch(() => {});
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        }
+      }
+
+      async function adminReserveSend() {
+        try {
+          const payload = {
+            to_user_id: Number(adminToUser),
+            amount: Number(adminGiveAmount),
+          };
+          await post("admin/reserve/send", payload);
+          setMessage({ type: "good", text: "Отправлено из резерва" });
+          load().catch(() => {});
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        }
+      }
+
+      useEffect(() => {
+        if (!tg?.initData) return;
+        load().catch((e) => setMessage({ type: "bad", text: e.message }));
+        loadNfts().catch(() => {});
+        loadMyNfts().catch(() => {});
+        tapSyncTimerRef.current = setInterval(() => flushTap(), TAP_SYNC_INTERVAL_MS);
+        return () => {
+          if (tapSyncTimerRef.current) clearInterval(tapSyncTimerRef.current);
+        };
+      }, []);
+
+      function pushFloat(x, y, text) {
+        const id = Math.random().toString(16).slice(2);
+        setFloats((prev) => prev.concat([{ id, x, y, text }]));
+        setTimeout(() => setFloats((prev) => prev.filter((f) => f.id !== id)), 800);
+      }
+
+      function queueTap(count, clientX, clientY) {
+        const n = Math.max(1, Math.min(MAX_TAP_BATCH, Number(count) || 1));
+        tapBufferRef.current += n;
+        pushFloat(clientX, clientY, `+${n}`);
+
+        if (!tapFlushTimerRef.current) {
+          tapFlushTimerRef.current = setTimeout(() => {
+            tapFlushTimerRef.current = null;
+            flushTap();
+          }, TAP_BATCH_WINDOW_MS);
+        }
+      }
+
+      async function flushTap() {
+        if (inFlightRef.current) return;
+        const buffered = tapBufferRef.current;
+        if (!buffered) return;
+
+        inFlightRef.current = true;
+        tapBufferRef.current = 0;
+
+        try {
+          const data = await post("tap", { count: buffered });
+          setState(data);
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        } finally {
+          inFlightRef.current = false;
+        }
+      }
+
+      function onTouchStart(e) {
+        e.preventDefault();
+        const touches = Math.max(1, Math.min(MAX_MULTITOUCH, e.changedTouches?.length || 1));
+        const t = e.changedTouches?.[0];
+        queueTap(touches, t?.clientX || (window.innerWidth / 2), t?.clientY || (window.innerHeight / 2));
+      }
+
+      function onMouseDown(e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        queueTap(1, e.clientX, e.clientY);
+      }
+
+      async function doTransfer() {
+        try {
+          const data = await post("transfer", { to, amount: Number(amount) });
+          setState(data);
+          setMessage({ type: "good", text: "Перевод выполнен" });
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        }
+      }
+
+      async function buyEnergy1h() {
+        try {
+          const data = await post("buy", { item: "energy_1h" });
+          setState(data);
+          setMessage({ type: "good", text: `Energy 1h активирована. Списано ${format(data.cost)} BKC` });
+        } catch (e) {
+          setMessage({ type: "bad", text: e.message });
+        }
+      }
+
+      if (!tg?.initData) {
+        return (
+          <div className="app">
+            <div className="top">
+              <div className="brand">
+                <div className="pill">BKC</div>
+                <div className="name">Mini App доступен только в Telegram</div>
+              </div>
+              <div className="balance"><strong>0</strong><span>BKC</span></div>
+            </div>
+            <div className="panel"><div className="panelInner muted">Открой через кнопку MINI APP в боте.</div></div>
+            <div className="tabs"></div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="app">
+          <div className="top">
+            <div className="brand">
+              <div className="pill">BKC</div>
+              <div>
+                <div className="name">{name}</div>
+                <div className="muted">Курс: {format(rate)} BKC = $1</div>
+              </div>
+            </div>
+            <div className="balance">
+              <strong>{format(balance)}</strong>
+              <span>BKC</span>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panelInner">
+              {message && <div className={`msg ${message.type}`}>{message.text}</div>}
+
+              {tab === "tap" && (
+                <>
+                  <div className="coinZone">
+                    <div className="coin" onTouchStart={onTouchStart} onMouseDown={onMouseDown}>
+                      <div className="coinInner">
+                        {state?.coin_image_url
+                          ? <img className="coinImg" src={state.coin_image_url} alt="coin" />
+                          : <div className="coinFallback">BKC</div>
+                        }
+                      </div>
+                    </div>
+
+                    {floats.map((f) => (
+                      <div key={f.id} className="float" style={{ left: `${f.x}px`, top: `${f.y}px` }}>{f.text}</div>
+                    ))}
+                  </div>
+
+                  <div className="bar">
+                    <div className="barTop">
+                      <strong>ENERGY</strong>
+                      <div className="muted">{format(energy)} / {format(energyMax)}</div>
+                    </div>
+                    <div className="barTrack">
+                      <div className="barFill" style={{ width: `${energyPct}%` }}></div>
+                    </div>
+                    <div className="muted" style={{ marginTop: 10 }}>
+                      Тапы ограничены энергией. Поддержка до {MAX_MULTITOUCH} пальцев.
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {tab === "wallet" && (
+                <>
+                  <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
+                    <div>
+                      <div style={{ fontWeight: 800, fontSize: 16 }}>Кошелек</div>
+                      <div className="muted">Адрес: {state?.address}</div>
+                    </div>
+                    <button className="btn primary" onClick={() => load()}>Обновить</button>
+                  </div>
+
+                  <div className="row" style={{ marginTop: 12 }}>
+                    <input className="input" placeholder="Кому (BKC123 или 123)" value={to} onChange={(e) => setTo(e.target.value)} />
+                    <input className="input" type="number" min="1" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                    <button className="btn primary" onClick={doTransfer}>Перевести</button>
+                  </div>
+
+                  <div style={{ marginTop: 18, fontWeight: 800, fontSize: 16 }}>NFT</div>
+                  {myNfts?.length ? (
+                    <div className="grid" style={{ marginTop: 10 }}>
+                      {myNfts.map((n) => (
+                        <div key={n.nft_id} className="card">
+                          <img className="nftImg" src={n.image_url} alt={n.title} />
+                          <div className="cardBody">
+                            <div style={{ fontWeight: 800 }}>{n.title}</div>
+                            <div className="muted">x{format(n.qty)}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="muted" style={{ marginTop: 8 }}>У тебя пока нет NFT.</div>
+                  )}
+                </>
+              )}
+
+              {tab === "market" && (
+                <>
+                  <div style={{ fontWeight: 800, fontSize: 16 }}>Market</div>
+
+                  <div style={{ marginTop: 14, fontWeight: 800 }}>Energy</div>
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    Energy 1h ускоряет реген и увеличивает лимит энергии.
+                  </div>
+                  <div className="row" style={{ marginTop: 12 }}>
+                    <button className="btn primary" onClick={buyEnergy1h}>
+                      Купить Energy 1h за {format(state?.prices?.ENERGY_1H || 25000)} BKC
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: 18, fontWeight: 800 }}>CryptoBot (USD)</div>
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    Пополнение через CryptoBot. Курс: {format(rate)} BKC = $1.
+                  </div>
+                  <div className="row" style={{ marginTop: 12 }}>
+                    <input className="input" type="number" min="1" max="10000" value={usd} onChange={(e) => setUsd(e.target.value)} />
+                    <button className="btn primary" onClick={createInvoice}>Создать инвойс</button>
+                    {invoice?.invoice_id && (
+                      <button className="btn" onClick={checkInvoice}>Проверить</button>
+                    )}
+                  </div>
+                  {invoice?.invoice_id && (
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      Invoice #{invoice.invoice_id} · {invoice.status || "?"} · +{format(invoice.coins)} BKC
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: 18, fontWeight: 800 }}>NFT Shop</div>
+                  <div className="row" style={{ marginTop: 10 }}>
+                    <button className="btn" onClick={() => { loadNfts(); loadMyNfts(); }}>Обновить NFT</button>
+                  </div>
+
+                  {nfts?.length ? (
+                    <div className="grid" style={{ marginTop: 12 }}>
+                      {nfts.map((n) => (
+                        <div key={n.nft_id} className="card">
+                          <img className="nftImg" src={n.image_url} alt={n.title} />
+                          <div style={{ padding: 10 }}>
+                            <div style={{ fontWeight: 800 }}>{n.title}</div>
+                            <div className="muted" style={{ marginTop: 6 }}>
+                              {format(n.price_coins)} BKC · осталось {format(n.supply_left)}
+                            </div>
+                            <div className="row" style={{ marginTop: 10 }}>
+                              <button className="btn primary" onClick={() => buyNft(n.nft_id)} disabled={Number(n.supply_left) <= 0}>
+                                Купить
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="muted" style={{ marginTop: 10 }}>NFT пока нет.</div>
+                  )}
+
+                  {state?.is_admin && (
+                    <div style={{ marginTop: 18 }}>
+                      <div style={{ fontWeight: 800 }}>Admin: Add NFT</div>
+                      <div className="row" style={{ marginTop: 10 }}>
+                        <input className="input" placeholder="Название" value={nftTitle} onChange={(e) => setNftTitle(e.target.value)} />
+                        <input className="input" placeholder="Image URL" value={nftImageURL} onChange={(e) => setNftImageURL(e.target.value)} />
+                        <input className="input" type="number" min="1" placeholder="Цена (BKC)" value={nftPrice} onChange={(e) => setNftPrice(e.target.value)} />
+                        <input className="input" type="number" min="1" placeholder="Supply" value={nftSupply} onChange={(e) => setNftSupply(e.target.value)} />
+                        <button className="btn primary" onClick={adminCreateNft}>Добавить</button>
+                      </div>
+                      <div className="muted" style={{ marginTop: 8 }}>
+                        Можно использовать относительные URL (например /assets/nft1.jpg), если файл лежит в webapp/assets.
+                      </div>
+
+                      <div style={{ marginTop: 16, fontWeight: 800 }}>Admin: Reserve Send</div>
+                      <div className="row" style={{ marginTop: 10 }}>
+                        <input className="input" placeholder="User ID" value={adminToUser} onChange={(e) => setAdminToUser(e.target.value)} />
+                        <input className="input" type="number" min="1" placeholder="Amount (BKC)" value={adminGiveAmount} onChange={(e) => setAdminGiveAmount(e.target.value)} />
+                        <button className="btn primary" onClick={adminReserveSend}>Отправить</button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="tabs">
+            <button className={`tab ${tab === "tap" ? "active" : ""}`} onClick={() => setTab("tap")}>TAP</button>
+            <button className={`tab ${tab === "wallet" ? "active" : ""}`} onClick={() => setTab("wallet")}>WALLET</button>
+            <button className={`tab ${tab === "market" ? "active" : ""}`} onClick={() => setTab("market")}>MARKET</button>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

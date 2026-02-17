@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="glow" cx="30%" cy="25%" r="75%">
+      <stop offset="0%" stop-color="#b9fff6" stop-opacity="0.95"/>
+      <stop offset="42%" stop-color="#3cd6c6" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#071c2f" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="rim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffd166"/>
+      <stop offset="35%" stop-color="#ff9f1c"/>
+      <stop offset="70%" stop-color="#3cd6c6"/>
+      <stop offset="100%" stop-color="#98f5cd"/>
+    </linearGradient>
+
+    <radialGradient id="core" cx="35%" cy="30%" r="80%">
+      <stop offset="0%" stop-color="#183f5a"/>
+      <stop offset="55%" stop-color="#0a2a44"/>
+      <stop offset="100%" stop-color="#071c2f"/>
+    </radialGradient>
+
+    <filter id="softShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+
+    <filter id="emboss" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur"/>
+      <feSpecularLighting in="blur" surfaceScale="2" specularConstant="0.35" specularExponent="18" lighting-color="#ffffff" result="spec">
+        <feDistantLight azimuth="230" elevation="40"/>
+      </feSpecularLighting>
+      <feComposite in="spec" in2="SourceAlpha" operator="in" result="specMask"/>
+      <feComposite in="SourceGraphic" in2="specMask" operator="arithmetic" k1="0" k2="1" k3="0.55" k4="0"/>
+    </filter>
+
+    <pattern id="microGrid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#glow)"/>
+
+  <g filter="url(#softShadow)">
+    <circle cx="256" cy="256" r="220" fill="url(#rim)"/>
+    <circle cx="256" cy="256" r="206" fill="#0b253a" opacity="0.55"/>
+    <circle cx="256" cy="256" r="194" fill="url(#core)"/>
+  </g>
+
+  <circle cx="256" cy="256" r="176" fill="url(#microGrid)" opacity="0.55"/>
+  <circle cx="256" cy="256" r="172" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="2"/>
+
+  <g filter="url(#emboss)">
+    <text x="256" y="268" text-anchor="middle" font-size="96" font-weight="900" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" fill="#eef7ff">
+      BKC
+    </text>
+    <text x="256" y="320" text-anchor="middle" font-size="20" font-weight="700" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" fill="#b5cde0" letter-spacing="4">
+      COIN
+    </text>
+  </g>
+
+  <g opacity="0.85">
+    <circle cx="168" cy="190" r="4" fill="#b9fff6"/>
+    <circle cx="353" cy="160" r="3" fill="#ffd166"/>
+    <circle cx="364" cy="330" r="2.5" fill="#3cd6c6"/>
+    <circle cx="155" cy="344" r="2.5" fill="#ffd166"/>
+  </g>
+
+  <circle cx="256" cy="256" r="220" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="2"/>
+</svg>
+
